@@ -9,11 +9,11 @@ import json
 import sys
 import os
 
-API_TOKEN = '7686226660:AAEK1Av8LedmZ2RXOFlBmvpo1defR34kKAg'
-CHECK_BONUS_BOT_URL = 'https://t.me/testbot_for_pay_bot'
-MS_TOKEN = '072279764353831482c1d8083b948e18854f2f2a'
-SKLAD_NAME = 'витрина Атаги'
-PROVIDER_TOKEN = '381764678:TEST:59994'
+API_TOKEN = ''
+CHECK_BONUS_BOT_URL = ''
+MS_TOKEN = ''
+SKLAD_NAME = ''
+PROVIDER_TOKEN = ''
 
 # Загрузка внешних кодов из JSON-файла по категориям
 def load_product_codes():
