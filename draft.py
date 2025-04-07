@@ -1,5 +1,5 @@
 import asyncio
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -7,12 +7,17 @@ import logging
 import aiohttp
 import json
 import sys
+from dotenv import load_dotenv
+import os
 
-API_TOKEN = '7686226660:AAEK1Av8LedmZ2RXOFlBmvpo1defR34kKAg'
-CHECK_BONUS_BOT_URL = 'https://t.me/testbot_for_pay_bot'
-MS_TOKEN = '072279764353831482c1d8083b948e18854f2f2a'
-SKLAD_NAME = 'витрина Атаги'
-TARGET_USER_ID = 5340348274  # ID администратора, получающего запросы
+load_dotenv("data.env")
+
+API_TOKEN = os.getenv("API_TOKEN")
+CHECK_BONUS_BOT_URL = os.getenv("CHECK_BONUS_BOT_URL")
+MS_TOKEN = os.getenv("MS_TOKEN")
+SKLAD_NAME = os.getenv("SKLAD_NAME")
+TARGET_USER_ID = int(os.getenv("TARGET_USER_ID"))
+
 
 def load_product_codes():
     with open("products.json", encoding="utf-8") as f:
@@ -21,6 +26,7 @@ def load_product_codes():
 PRODUCT_CODES = load_product_codes()
 CATEGORIES = list(PRODUCT_CODES.keys())
 USER_CARTS = {}
+PRODUCT_CACHE = {}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +38,9 @@ bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTM
 dp = Dispatcher()
 
 async def get_products_from_api(category):
+    if category in PRODUCT_CACHE:
+        return PRODUCT_CACHE[category]
+
     url = "https://api.moysklad.ru/api/remap/1.2/entity/assortment"
     headers = {
         "Authorization": f"Bearer {MS_TOKEN}",
@@ -58,17 +67,20 @@ async def get_products_from_api(category):
                 if sale_prices:
                     price = int(sale_prices[0].get("value", 0)) // 100
                 result.append({"name": name, "price": price, "quantity": int(stock), "code": code})
+    PRODUCT_CACHE[category] = result
     return result
 
-def back_to_main_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅ Вернуться к категориям", callback_data="back_to_main")]
-    ])
+async def get_product_by_code(code):
+    for category in CATEGORIES:
+        items = await get_products_from_api(category)
+        for item in items:
+            if item["code"] == code:
+                return item
+    return None
 
 def product_keyboard(code):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Добавить в корзину", callback_data=f"add_{code}")],
-        [InlineKeyboardButton(text="⬅ Вернуться к категориям", callback_data="back_to_main")]
+        [InlineKeyboardButton(text="🛒 Добавить в корзину", callback_data=f"add_{code}")]
     ])
 
 @dp.message(F.text == "/start")
@@ -96,7 +108,7 @@ async def show_products_by_category(message: Message):
     category = message.text
     items = await get_products_from_api(category)
     if not items:
-        await message.answer(f"Нет товаров в категории '{category}' в наличии.", reply_markup=back_to_main_keyboard())
+        await message.answer(f"Нет товаров в категории '{category}' в наличии.")
         return
     for item in items:
         await message.answer(
@@ -116,8 +128,7 @@ async def show_cart(message: Message):
     user_id = str(message.from_user.id)
     cart = USER_CARTS.get(user_id, [])
     if not cart:
-        keyboard = [[InlineKeyboardButton(text="⬅ Вернуться к категориям", callback_data="back_to_main")]]
-        await message.answer("♻️ Корзина обновлена.", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+        await message.answer("♻️ Корзина обновлена.")
         return
 
     summary = {}
@@ -129,26 +140,21 @@ async def show_cart(message: Message):
     keyboard = []
 
     for code, qty in summary.items():
-        for cat in CATEGORIES:
-            if code in PRODUCT_CODES[cat]:
-                items = await get_products_from_api(cat)
-                item = next((x for x in items if x["code"] == code), None)
-                if item:
-                    name = item["name"]
-                    price = item["price"]
-                    total += price * qty
-                    text += f"{name} — {price}₽ × {qty} = {price * qty}₽\n"
-                    keyboard.append([
-                        InlineKeyboardButton(text=f"➖ {name}", callback_data=f"decrease_{code}"),
-                        InlineKeyboardButton(text=f"{qty} шт.", callback_data="noop"),
-                        InlineKeyboardButton(text="➕", callback_data=f"increase_{code}")
-                    ])
-                break
+        item = await get_product_by_code(code)
+        if item:
+            name = item["name"]
+            price = item["price"]
+            total += price * qty
+            text += f"{name} — {price}₽ × {qty} = {price * qty}₽\n"
+            keyboard.append([
+                InlineKeyboardButton(text=f"➖ {name}", callback_data=f"decrease_{code}"),
+                InlineKeyboardButton(text=f"{qty} шт.", callback_data="noop"),
+                InlineKeyboardButton(text="➕", callback_data=f"increase_{code}")
+            ])
 
     text += f"\n<b>💰 Итого: {total}₽</b>"
     keyboard.append([InlineKeyboardButton(text="📩 Отправить запрос", callback_data="send_request")])
     keyboard.append([InlineKeyboardButton(text="🗑 Очистить корзину", callback_data="clear_cart")])
-    keyboard.append([InlineKeyboardButton(text="⬅ Вернуться к категориям", callback_data="back_to_main")])
     await message.answer(text=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 
@@ -199,16 +205,12 @@ async def send_request(callback: CallbackQuery):
 
     total = 0
     for code, qty in summary.items():
-        for cat in CATEGORIES:
-            if code in PRODUCT_CODES[cat]:
-                items = await get_products_from_api(cat)
-                item = next((x for x in items if x['code'] == code), None)
-                if item:
-                    name = item['name']
-                    price = item['price']
-                    total += price * qty
-                    text += f"{name} — {price}₽ × {qty} = {price * qty}₽\n"
-                break
+        item = await get_product_by_code(code)
+        if item:
+            name = item['name']
+            price = item['price']
+            total += price * qty
+            text += f"{name} — {price}₽ × {qty} = {price * qty}₽\n"
 
     text += f"\n<b>💰 Итого: {total}₽</b>"
     try:
@@ -233,7 +235,7 @@ async def remove_item(callback: CallbackQuery):
 async def clear_cart(callback: CallbackQuery):
     user_id = str(callback.from_user.id)
     USER_CARTS[user_id] = []
-    await callback.message.edit_text("🧺 Корзина очищена.", reply_markup=back_to_main_keyboard())
+    await callback.message.edit_text("🧺 Корзина очищена.")
 
 @dp.message(F.text == "🔍 Поиск по названию")
 async def prompt_search(message: Message):
@@ -257,18 +259,13 @@ async def handle_search_query(message: Message):
         matches = [item for item in items if query in item['name'].lower()]
         results.extend(matches)
     if not results:
-        await message.answer("Товар не найден.", reply_markup=back_to_main_keyboard())
+        await message.answer("Товар не найден.")
         return
     for item in results:
         await message.answer(
             text=f"{item['name']}\nЦена: {item['price']}₽\nДоступно: {item['quantity']} шт.",
             reply_markup=product_keyboard(item['code'])
         )
-
-@dp.callback_query(F.data == "back_to_main")
-async def back_to_main(callback: CallbackQuery):
-    await callback.message.delete()
-    await start_menu(callback.message)
 
 async def main():
     await dp.start_polling(bot)
